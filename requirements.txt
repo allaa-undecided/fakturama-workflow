@@ -1,0 +1,11 @@
+pyobjc-framework-Cocoa
+pyobjc-framework-ApplicationServices
+pyobjc-framework-Quartz
+pyobjc-framework-Vision
+pyautogui
+pytesseract
+opencv-python
+pillow
+numpy
+pyperclip
+pytest
