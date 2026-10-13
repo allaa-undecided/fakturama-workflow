@@ -18,7 +18,7 @@ Fakturama Automation is a desktop automation prototype developed for an order-pr
 
 The implementation targets **Fakturama 2.2.0 on macOS** and uses a combination of accessibility metadata, OCR, and visual anchors to work with controls that are not always exposed to automation tools.
 
-The included demonstration uses `samples/order_northstar.png`. The repository also contains an account of a completed run in [`PRD.md`](PRD.md). It is a reference implementation for the supplied order format and tested desktop environment, **not a general-purpose invoice service**.
+The included demonstration uses `samples/order_northstar.png`. 
 
 ## Workflow at a glance
 
