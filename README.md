@@ -1,124 +1,241 @@
-# Fakturama image-to-cash
+<div align="center">
 
-Posts the Northstar order in `samples/order_northstar.png` into the open Fakturama workspace: debtor, VAT, products, a saved order, and a paid follow-up invoice.
+# Fakturama Automation
 
-macOS has no Microsoft UI Automation. This project drives Fakturama 2.2.0 with the macOS Accessibility API (the AX roles on the process whose bundle id is `Fakturama.ID`) and with on-screen text when SWT does not expose a control. Requirements, the source fields, and the posted records are in [PRD.md](PRD.md).
+### From a purchase-order image to a verified order and linked invoice — through the desktop UI.
 
-## Setup
+**Python · macOS Accessibility API · Tesseract OCR · Apple Vision · OpenCV**
 
-You need a Mac with Fakturama 2.2.0 already open on the workspace you want to post into. Leave that window in front of other apps while the script runs. The script activates `Fakturama.ID` itself.
+[Quick start](#quick-start) · [How it works](#how-it-works) · [Architecture](#architecture) · [Verification](#verification-and-safety) · [Limitations](#current-limitations)
 
-Grant two privacy permissions to the terminal or IDE that runs Python:
+</div>
 
-- **Accessibility**, so the script can read AX roles, focus fields, and type into them.
-- **Screen Recording**, so it can screenshot the window for OCR and for the pixel scans that find buttons SWT does not expose.
+---
 
-Python 3.12, Tesseract, and the packages in `requirements.txt`:
+## Overview
 
-```bash
-brew install tesseract
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+Fakturama Automation is a desktop automation prototype developed for an order-processing take-home assessment. Given an image of a sales order, it extracts and validates the order data, works through Fakturama's user interface, resolves missing master records, and creates an **Order followed by its linked Invoice**.
+
+This is **UI automation**, not direct database manipulation or an unofficial Fakturama API integration. The implementation targets **Fakturama 2.2.0 on macOS** and uses a combination of accessibility metadata, OCR, and visual anchors to work with controls that are not always exposed to automation tools.
+
+The included demonstration uses `samples/order_northstar.png`. The repository also contains an account of a completed run in [`PRD.md`](PRD.md). It is a reference implementation for the supplied order format and tested desktop environment, **not a general-purpose invoice service**.
+
+## Workflow at a glance
+
+```mermaid
+flowchart TD
+    A[Order image] --> B[OCR + structured parsing]
+    B --> C{Amounts and fields valid?}
+    C -- No --> X[Stop for review]
+    C -- Yes --> D[Open New Order]
+    D --> E{Exact debtor exists?}
+    E -- No --> F[Create debtor and required payment method]
+    E -- Yes --> G[Select debtor on Order]
+    F --> G
+    G --> H{Each SKU exists?}
+    H -- No --> I[Resolve VAT and create product]
+    I --> J[Select product and fill line]
+    H -- Yes --> J
+    J --> K{More items?}
+    K -- Yes --> H
+    K -- No --> L[Check totals and save Order]
+    L --> M[Create follow-up Invoice from Order]
+    M --> N[Apply payment method and status]
+    N --> O[Save and verify documents]
 ```
 
-What each piece is for:
+**The central design decision:** open the Order first, check for existing debtors and products *from its selectors*, and return to the same Order after creating any missing records. The invoice is generated using the **saved Order's follow-up action**, preserving the document relationship rather than creating a disconnected invoice.
 
-| Piece | Role |
+## What the implementation covers
+
+| Stage | Behavior |
 | --- | --- |
-| Apple Vision (`pyobjc-framework-Vision`) | Reads the order image, and reads a selected blue grid row after its white glyphs are painted black |
-| Tesseract | Reads dialog tables and on-screen labels. A full-screen pass is slow |
-| OpenCV and Pillow | Pixel scans for the disclosure triangle, the add-address plus, and the blue row highlight |
-| pyautogui | Clicks and keystrokes, in logical points. Screenshots are often retina 2x, so pixel positions are scaled back to those points |
-| pyperclip | Pastes into fields where a click would drag a window or where a synthesized key press hits the wrong control |
-| ApplicationServices / Cocoa | Accessibility tree: roles, titles, focus, and read-back after each write |
+| **Document extraction** | Reads the reference, dates, customer, contacts, billing/delivery addresses, payment details, items, discounts, VAT and totals. |
+| **Preflight validation** | Checks parsed values and line-item/aggregate arithmetic before beginning UI entry. |
+| **Order creation** | Opens a new Order, retains Fakturama's generated number, and fills date, customer reference and Net price mode. |
+| **Debtor resolution** | Searches for an existing debtor; creates its master record and addresses when needed. |
+| **Payment method** | Reuses an existing method or creates the required term for the debtor workflow. |
+| **VAT and products** | Resolves or creates the VAT rate and each missing SKU, then adds lines to the open Order. |
+| **Order verification** | Validates the populated lines and totals, saves, and checks the document listing. |
+| **Linked invoicing** | Creates the invoice through the Order's follow-up action and applies payment details. |
+| **Final verification** | Checks the saved Order/Invoice and the persisted payment state. |
 
-Checks that do not touch the UI:
+This workflow is deliberately conservative about ambiguous UI matches: an uncertain match should lead to a manual-review stop rather than a guessed click or duplicate record.
+
+## Quick start
+
+### Prerequisites
+
+- **macOS** with **Fakturama 2.2.0** installed and configured with a workspace.
+- **Python 3.12** and [Homebrew](https://brew.sh/) for the example installation below.
+- **Tesseract OCR** (`brew install tesseract`).
+- macOS **Accessibility** and **Screen Recording** permission for the Terminal or IDE used to launch Python.
+- An active desktop session with Fakturama open. Keep the Fakturama window visible and avoid interacting with it during the run.
+
+> This implementation uses Apple's Accessibility (AX) API; **Microsoft UI Automation is not available on macOS**. The code has not been validated on Windows or Linux.
+
+### 1. Install
 
 ```bash
-python -m pytest tests
+git clone https://github.com/allaa-undecided/fakturama-workflow.git
+cd fakturama-workflow
+
+brew install tesseract
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
 ```
 
-## Run
+If `python3.12` is not installed, install it with Homebrew first (`brew install python@3.12`) or use a compatible Python installation.
+
+### 2. Grant macOS permissions
+
+In **System Settings → Privacy & Security**, enable:
+
+- **Accessibility** for your Terminal/IDE (reading and interacting with controls).
+- **Screen & System Audio Recording** / **Screen Recording** for your Terminal/IDE (capturing screen content for OCR and screenshots; wording varies by macOS version).
+
+Restart the terminal application if macOS requires it after granting access.
+
+### 3. Inspect the current UI state
+
+Open Fakturama and the workspace you intend to use, then run:
 
 ```bash
 python run.py --probe
-python run.py samples/order_northstar.png --dry-run
+```
+
+This reports detected windows and tabs, reads visible UI text, and writes a diagnostic screenshot. Use it to confirm that the correct app and workspace are accessible before changing records.
+
+### 4. Run against the sample
+
+```bash
 python run.py samples/order_northstar.png
-python run.py samples/order_northstar.png --from-step 3.1
 ```
 
-`--probe` prints the open tabs and windows and saves a screenshot. `--dry-run` fills editors and does not click Save.
+## How it works
 
-`--from-step` accepts `1.3`, `2.1`, `2.5`, `2.10`, `2.11`, `3.1`, `4.1`, `4.5`, or `5.1`. Each step leaves Fakturama ready for the next one. An exact debtor match skips `2.5`, `2.10`, and `2.11`, then checks that the order shows the invoice street.
+### 1. Extract and validate the order
 
-This workspace already contains the Northstar debtor, both products, VAT 19%, Bank Transfer, and several posted orders and invoices from earlier runs (see [PRD.md](PRD.md)). A full run again creates another order against that same debtor and those products. If an unsaved New Debtor editor is still open, close it without saving before you start, so the run does not leave a second empty editor behind.
+`fakturama_auto/extract.py` uses **Tesseract word-level bounding boxes** to interpret the supplied order format. It identifies sections and column labels, associates values by position, and constructs typed order data. **Apple Vision** provides a second OCR check on key dates, reference fields and totals.
 
-Annotated captures from the live runs are in `docs/screenshots/`.
+Amounts are handled with Python's `Decimal`, reducing avoidable floating-point errors in financial comparisons. Extraction or arithmetic inconsistencies stop the workflow before the initial UI interaction.
 
-## What the run does
+### 2. Ground UI actions in observed controls
 
-The parser checks line math and the three totals before any UI write. A mismatch stops the run and nothing is posted. Every text write is read back. Save is one click per record. The order tab stays open while master data is created.
+Fakturama's SWT interface does not expose every grid cell or widget through a consistent accessibility tree. The automation therefore combines three techniques:
 
-| Step | What happens |
+1. **Accessibility-first:** locate controls by role/title, interact with accessible fields, and read values back.
+2. **OCR anchors:** recognize visible labels when accessibility metadata is incomplete and interact relative to their positions.
+3. **Visual analysis:** use screenshot/image processing for controls or selected table rows that are not otherwise discoverable.
+
+This approach avoids making fixed absolute screen coordinates the primary interface contract. It is nevertheless sensitive to changes in UI rendering, focus, screen geometry, language and Fakturama versions.
+
+### 3. Preserve the Order-first relationship
+
+The workflow checks existing records from within the current Order. When a debtor, payment term, VAT or product is missing, the corresponding creation flow runs and the automation returns to the Order. After saving the Order, the linked Invoice is generated from its **Create a follow-up document → Invoice** action, rather than the global New Invoice button.
+
+### 4. Verify before proceeding
+
+The implementation checks intermediate values and document state as it proceeds. It uses read-back for writes where available, checks item arithmetic against the source, saves each final document through its UI control, and searches the Documents view for evidence of the saved records. Details of the sample run, observed exceptions and UI-specific behaviors are documented in [`PRD.md`](PRD.md).
+
+## Example: the included Northstar order
+
+The sample purchase-order image contains a two-line, paid order for **Northstar Office GmbH**.
+
+| SKU | Description | Qty | Unit net | Discount | Line net |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `CHR-ERG-01` | Ergonomic Desk Chair | 2 | 250.00 | 10% | 450.00 |
+| `MAT-DESK-02` | Anti-Fatigue Desk Mat | 3 | 40.00 | 0% | 120.00 |
+
+| Amount | Value |
+| --- | ---: |
+| Net | **570.00** |
+| VAT (19%) | **108.30** |
+| Gross | **678.30** |
+
+- **External reference:** `WEB-2026-0714-A17`
+- **Order date:** 2026-07-14
+- **Payment method:** Bank Transfer
+- **Status:** Paid on 2026-07-18
+- **Source currency:** EUR
+
+The documented test run in [`PRD.md`](PRD.md) records an Order (`PO000004`) and a linked paid Invoice (`INV000003`), with the expected gross total. These are **historical identifiers from that test workspace**, not numbers the script expects or assigns on future runs.
+
+**Currency caveat:** the sample image uses **EUR**, but the configured Fakturama workspace displayed **$**. The prototype compares the numerical amounts and does **not** enforce workspace currency consistency. A production implementation should verify the currency explicitly before posting.
+
+## Architecture
+
+```text
+fakturama-workflow/
+├── run.py                    # Command-line entry point and --probe
+├── main.py                   # Additional repository entry point
+├── fakturama_auto/
+│   ├── extract.py            # OCR, document parsing, validation
+│   ├── models.py             # Structured source entities and amounts
+│   ├── flow.py               # Ordered, resumable workflow
+│   ├── ax.py                 # macOS Accessibility helpers
+│   ├── screen.py             # Screen OCR, visual grounding, captures
+│   ├── ui.py                 # Common UI actions and controls
+│   ├── errors.py             # Manual-review exception
+│   └── steps/                # Debtor, payment, VAT/product, order, invoice
+├── samples/
+│   └── order_northstar.png   # Assessment input image
+├── tests/                    # Automated checks
+├── docs/                     # Supporting documentation and captures
+├── PRD.md                    # Requirements, sample run, findings and gaps
+└── requirements.txt
+```
+
+The separation is intentional: **extraction** deals with source data, **UI adapters** deal with how controls are found and operated, and **steps/flow** deals with business-process order and verification.
+
+## Verification and safety
+
+Financial UI automation should **fail visibly**, not silently post plausible-looking but incorrect data. The prototype incorporates several safeguards:
+
+- **Before UI activity:** validate the order structure, item arithmetic and summary totals.
+- **Before master-data creation:** search for existing records to reduce duplication.
+- **During data entry:** use accessibility read-back and screen-based checks where supported.
+- **Before saving:** compare the populated Order against the extracted source.
+- **After saving:** inspect saved document rows and verify the invoice's paid information.
+- **On uncertainty:** stop for manual review rather than making an unsupported selection.
+
+These checks reduce risk; they do not make the process atomic or guarantee that partial writes cannot occur. An interrupted run may require reviewing the workspace before retrying. The UI may also truncate identifiers in listings, limiting the strength of verification from visible text alone.
+
+## Current limitations
+
+This was scoped as a **time-boxed implementation**, so the boundaries matter:
+
+| Area | Current boundary |
 | --- | --- |
-| 1.3 | Opens a New Order. Sets the date to Jul 14, 2026 when it is not already that date, sets Cust.Ref. `WEB-2026-0714-A17`, and selects Net. The proposed document number is left as Fakturama assigned it |
-| 2.1 | Opens the contact selector and searches the debtor. Two rows with the same customer number are one debtor: the upper row is the invoice address (Friedrichstrasse 88 / 10117). The warehouse row is not selected onto the order |
-| 2.5 | Creates the debtor only when no exact row exists. Fills identity and the main (invoice) address, then the warehouse as a second address, then miscellaneous |
-| 2.10 | Selects Bank Transfer. The term is created once, with code Credit transfer, and is not duplicated |
-| 2.11 | Saves the debtor and selects it on the order. The order check requires the invoice street. The delivery street stays on the debtor |
-| 3.1 | Creates VAT 19% and both products when they are missing, then completes each line: quantity, unit price, and discount |
-| 4.1 | Checks the order (reference, Net, both lines, totals 570.00 / 108.30 / 678.30) and saves it |
-| 4.5 | Opens Documents, confirms the order row, and creates the follow-up invoice from the icon under "Create a follow-up document" |
-| 5.1 | Sets Bank Transfer, marks the invoice paid on Jul 18, 2026 for 678.30, saves it, and confirms both documents |
+| **Document variety** | The extractor is tailored to the layout of the supplied assessment image; arbitrary invoices, scans or suppliers are not supported generically. |
+| **Platform/version** | Implemented for Fakturama 2.2.0 on macOS, not validated across operating systems or versions. |
+| **UI stability** | OCR anchors and visual matching can fail when controls change, text is clipped, focus moves or display geometry differs. |
+| **Currency** | Numeric totals are verified, but the EUR-to-`$` workspace mismatch is not resolved. |
+| **Input validation** | Fakturama rejects the sample `.test` email domain; the documented saved record did not retain that email. |
+| **Repeat execution** | Re-running may create additional Orders/Invoices; there is no fully transactional idempotency layer. |
+| **Resuming** | Checkpoint runs require the expected existing UI state and must be used carefully. |
+| **Scope** | The workflow stops at verification of the linked Invoice; it does not create delivery, correction or dunning documents. |
 
-### Debtor and addresses
+### What I would improve next
 
-The address search is pasted into the field the dialog already focused. Clicking that field drags the window. The list is read again until a row appears. If the full company name shows nothing, the run searches the first word. A blank ZIP column does not hide a row that shows the contact, the city, and the start of the company.
+1. **Reliable idempotency and recovery.** Persist checkpoints with record identities; check existing orders by an exact reference plus customer before any new write; support safe restart after partial completion.
+2. **Stronger record matching.** Compare full debtor/address attributes and exact SKUs using a more structured table reader rather than relying on truncated visible rows.
+3. **Currency and data-contract enforcement.** Reject unsupported currency/workspace mismatches and invalid required fields before posting.
+4. **Broader test coverage.** Add mocked UI-state transition tests, extraction fixtures covering poor scans and alternate layouts, and repeat-run regression tests.
+5. **Better observability.** Produce a machine-readable run report with screenshots, step timings, decisions, validation results and saved record identifiers.
 
-The add-address control is the plus at the right end of the Main address tab, in a light button a few dozen points from the screen edge. It is not in the accessibility tree. The run finds the dark plus on that tab row, starting just to the right of the words "Main address" and continuing to the screen edge. If an additional address tab is already open, that tab is used and the plus is not clicked again. The form label "additional name" is not a tab. On the extra address the warehouse name goes in additional name, and the street (Beusselstrasse 44) is the row under it. Address type is pasted into the white field and confirmed with Enter. The suggestion checkboxes are not clicked.
+## Documentation and evidence
 
-Country is the dropdown on the Mobile row. The run clicks the arrow, types the country, and presses Enter. It waits a second first so macOS does not take the keystrokes as a notification.
+- [`PRD.md`](PRD.md) — source fields, the documented completed run, step-level status, observed UI behavior and outstanding issues.
+- [`docs/`](docs/) — supporting artifacts; any screenshot evidence included in the repository can be inspected here.
+- [`samples/order_northstar.png`](samples/order_northstar.png) — supplied image used for the demonstration.
+- [`tests/`](tests/) — local automated checks; run with `python -m pytest tests`.
 
-### Product lines
+---
 
-| Line | Item | Qty | Net | Discount | Line net | Product gross |
-| --- | --- | --- | --- | --- | --- | --- |
-| Chair | CHR-ERG-01 | 2 | 250.00 | 10% | 450.00 | 297.50 |
-| Mat | MAT-DESK-02 | 3 | 40.00 | 0% | 120.00 | 47.60 |
+<div align="center">
 
-Totals are net 570.00, VAT 108.30, gross 678.30. The image says EUR. This workspace displays `$`. A 10% discount is shown as `-10.00 %`.
+**Built as a practical exercise in document understanding, stateful desktop automation, and verification-first workflow design.**
 
-The quantity cell expects a decimal such as `1.00`. The number is right-aligned, immediately left of the item number. The gray "Qty." heading is the empty left side of that cell. A click on the heading writes into the item number, the quantity stays 1.00, and the chair price stays the single-unit net 225.00 instead of 450.00. The run clicks the decimal quantity, and it types only when the opened cell already shows a decimal. Enter clears the blue row highlight, so the unit price and the discount reuse that same row. If the grid still shows the single-unit amount, the quantity is set once more. The selected row is read with Apple Vision after its white-on-blue glyphs are painted black. The terminal repeats item numbers; those copies are not extra lines.
-
-Product search is a real keystroke after the field is clicked. An accessibility write hits OK and inserts the highlighted row. The product price entered in Fakturama is the gross price (`net × 1.19`).
-
-### Documents and the paid invoice
-
-Documents has no Search label. The gray toolbar text is a placeholder. The order is under Orders. The paid invoice is under Invoices, then the child `paid`. A selected tree row is white on blue, so that label is often unreadable. The view title "Orders" or "Invoices/paid" means that category is already open. Clicking Invoices while it is expanded collapses the tree and hides `paid`, so the run clicks Invoices only when the paid child is not already visible. The customer reference is truncated to something like `WEB-202…`. The row is matched on `WEB-202` plus the gross total 678.30.
-
-The invoice has no Payment label. The method combo sits between the paid checkbox and Due. The run chooses Bank Transfer, ticks paid, and sets the date after the word "at" to Jul 18, 2026 with value 678.30. The invoice date in the header is left alone.
-
-## What the run does not do
-
-- It does not type the source customer id `CUST-1007`. Fakturama assigns its own id.
-- It does not change the proposed document numbers.
-- It does not create a delivery note, an invoice correction, or a dunning document.
-- It does not delete other debtors or earlier orders in the workspace.
-- It does not put the warehouse street on the order. The order shows the invoice address. The warehouse stays on the debtor as the delivery address.
-- It does not force the workspace currency. Amounts are checked as numbers. The symbol on this workspace is `$`.
-- It does not keep `marta.klein@example.test`. Fakturama rejects the `.test` domain on save and clears that field.
-
-## Layout
-
-```
-samples/order_northstar.png
-  extract.py          Apple Vision OCR, section parser, Decimal checks
-  flow.py             steps 1.3, 2.1, 2.5, 2.10, 2.11, 3.1, 4.1, 4.5, 5.1
-  ax.py               Accessibility roles, titles, focus, read-back
-  screen.py           OCR anchors, pixel geometry, screenshots
-  ui.py               menus, search fields, combos, one Save click
-  steps/              header, debtor, payment term, VAT, product, order, invoice
-```
-
-Controls are found by role and title first. When SWT does not expose the control, the label is found with OCR and the click is placed relative to that label. A label that OCR misses is read once more before the run stops. An ambiguous match stops the run.
+</div>
